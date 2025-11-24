@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Amigo Invisible</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 520px;
+      margin: 20px auto;
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid #ddd;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    h1 {
+      font-size: 1.4rem;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    h2 {
+      font-size: 1.1rem;
+      margin-top: 16px;
+    }
+    p {
+      font-size: 0.95rem;
+      color: #444;
+    }
+    textarea, select, button, input[type="text"] {
+      width: 100%;
+      padding: 10px;
+      margin-top: 10px;
+      font-size: 1rem;
+      border-radius: 8px;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    button {
+      cursor: pointer;
+    }
+    #result {
+      margin-top: 16px;
+      font-weight: bold;
+      font-size: 1.1rem;
+      padding: 12px;
+      border-radius: 8px;
+      background: #f4f4f4;
+      text-align: center;
+    }
+    .hidden {
+      display: none;
+    }
+    .hint {
+      font-size: 0.85rem;
+      color: #666;
+    }
+    .small {
+      font-size: 0.8rem;
+      color: #777;
+    }
+  </style>
+</head>
+<body>
+  <h1>Amigo Invisible</h1>
+
+  <!-- MODO ORGANIZADOR (sin hash en la URL) -->
+  <div id="organizerSection" class="hidden">
+    <h2>1. Organizador: crea el sorteo</h2>
+    <p>
+      Escribe los nombres del grupo, <strong>uno por línea</strong> (sin repetir).
+      Después pulsa <strong>“Generar enlace para WhatsApp”</strong>.
+    </p>
+    <textarea id="namesInput" placeholder="Ejemplo:
+Ana
+Luis
+Marta
+Carlos
+Lucía
+Javi"></textarea>
+
+    <button id="generateLinkButton">Generar enlace para WhatsApp</button>
+
+    <div id="linkBox" class="hidden">
+      <p class="hint">
+        Copia este enlace y pégalo en el grupo de WhatsApp. Todo el mundo usará
+        el mismo sorteo.
+      </p>
+      <input type="text" id="shareLink" readonly>
+      <button id="copyLinkButton">Copiar enlace</button>
+      <p class="small">
+        👉 Consejo: el organizador mejor que <strong>no juegue</strong>, así no sabe quién regala a quién.
+      </p>
+    </div>
+    <hr>
+    <p class="small">
+      Nota: el sorteo se guarda dentro del propio enlace (no hay servidor). Si quieres cambiar algo,
+      vuelve a esta página sin la parte de <code>#</code> en la URL y genera un enlace nuevo.
+    </p>
+  </div>
+
+  <!-- MODO PARTICIPANTE (con hash #a=... en la URL) -->
+  <div id="participantSection" class="hidden">
+    <h2>Participante: descubre a quién regalas</h2>
+    <p>
+      1️⃣ Elige tu nombre en la lista.<br>
+         2️⃣ Pulsa <strong>“Ver a quién regalo”</strong>.<br>
+      3️⃣ Memoriza el nombre y, si quieres, pulsa <strong>“Borrar pantalla”</strong> antes de dejar el móvil.
+    </p>
+
+    <label for="playerSelect">Elige tu nombre:</label>
+    <select id="playerSelect">
+      <option value="">-- Selecciona tu nombre --</option>
+    </select>
+
+    <button id="seeButton">Ver a quién regalo</button>
+
+    <div id="result" class="hidden"></div>
+    <button id="hideButton" class="hidden">He memorizado, borrar pantalla</button>
+
+    <p class="small">
+      En este dispositivo solo se puede consultar el amigo invisible con
+      <strong>un nombre</strong>. Si intentas usarlo con otro, se bloqueará.
+    </p>
+  </div>
+
+  <script>
+    // --- Utils para Base64 seguro con acentos (UTF-8) ---
+    function encodeBase64(str) {
+      return btoa(unescape(encodeURIComponent(str)));
+    }
+
+    function decodeBase64(str) {
+      return decodeURIComponent(escape(atob(str)));
+    }
+
+    // --- Generar una "derivación" (nadie se toca a sí mismo) ---
+    function createDerangement(list) {
+      const n = list.length;
+      const indices = list.map((_, i) => i);
+      let der;
+      if (n === 1) {
+        throw new Error("Hace falta como mínimo 2 personas.");
+      }
+      do {
+        // Fisher-Yates
+        for (let i = n - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [indices[i], indices[j]] = [indices[j], indices[i]];
+        }
+        der = indices.slice();
+      } while (der.some((v, i) => v === i));
+      return der;
+    }
+
+    // --- Variables globales para modo participante ---
+    let currentData = null; // { id, names, assignment }
+    let STORAGE_KEY = null; // se define cuando se lee currentData
+
+    document.addEventListener("DOMContentLoaded", () => {
+      const hash = window.location.hash || "";
+      if (hash.startsWith("#a=")) {
+        // MODO PARTICIPANTE
+        const encoded = decodeURIComponent(hash.slice(3));
+        startParticipantMode(encoded);
+      } else {
+        // MODO ORGANIZADOR
+        startOrganizerMode();
+      }
+    });
+
+    // --- MODO ORGANIZADOR ---
+    function startOrganizerMode() {
+      const orgSection = document.getElementById("organizerSection");
+      const partSection = document.getElementById("participantSection");
+      orgSection.classList.remove("hidden");
+      partSection.classList.add("hidden");
+
+      const namesInput = document.getElementById("namesInput");
+      const generateLinkButton = document.getElementById("generateLinkButton");
+      const linkBox = document.getElementById("linkBox");
+      const shareLink = document.getElementById("shareLink");
+      const copyLinkButton = document.getElementById("copyLinkButton");
+
+      generateLinkButton.addEventListener("click", () => {
+        const rawLines = namesInput.value
+          .split(/\r?\n/)
+          .map(l => l.trim())
+          .filter(l => l.length > 0);
+
+        if (rawLines.length < 2) {
+          alert("Es necesario introducir al menos 2 nombres.");
+          return;
+        }
+
+        const uniqueNames = [...new Set(rawLines)];
+        if (uniqueNames.length !== rawLines.length) {
+          alert("Hay nombres repetidos. Asegúrate de que cada nombre esté solo una vez.");
+          return;
+        }
+
+        let assignment;
+        try {
+          assignment = createDerangement(uniqueNames);
+        } catch (e) {
+          alert(e.message);
+          return;
+        }
+
+        const payload = {
+          id: Math.random().toString(36).slice(2, 10),
+          names: uniqueNames,
+          assignment: assignment
+        };
+
+        const json = JSON.stringify(payload);
+        const encoded = encodeBase64(json);
+
+        const baseUrl = window.location.href.split("#")[0];
+        const fullUrl = baseUrl + "#a=" + encoded;
+
+        shareLink.value = fullUrl;
+        linkBox.classList.remove("hidden");
+      });
+
+      copyLinkButton.addEventListener("click", () => {
+        const shareLink = document.getElementById("shareLink");
+        shareLink.select();
+        shareLink.setSelectionRange(0, 99999);
+        try {
+          document.execCommand("copy");
+          alert("Enlace copiado. Pégalo ahora en el grupo de WhatsApp.");
+        } catch (e) {
+          alert("No se pudo copiar automáticamente. Copia el enlace manualmente.");
+        }
+      });
+    }
+
+    // --- MODO PARTICIPANTE ---
+    function startParticipantMode(encoded) {
+      const orgSection = document.getElementById("organizerSection");
+      const partSection = document.getElementById("participantSection");
+      orgSection.classList.add("hidden");
+      partSection.classList.remove("hidden");
+
+      let data;
+      try {
+        const json = decodeBase64(encoded);
+        data = JSON.parse(json);
+      } catch (e) {
+        alert("El enlace del sorteo es inválido o está dañado. Pide al organizador que lo genere de nuevo.");
+        return;
+      }
+
+      if (!data || !Array.isArray(data.names) || !Array.isArray(data.assignment)) {
+        alert("El enlace del sorteo no es válido.");
+        return;
+      }
+
+      currentData = data;
+      STORAGE_KEY = "amigoInvisible_" + (data.id || "default");
+
+      const names = data.names;
+      const assignment = data.assignment;
+
+      if (names.length !== assignment.length) {
+        alert("Los datos del sorteo parecen estar corruptos.");
+        return;
+      }
+
+      // Rellenar el select con los nombres
+      const select = document.getElementById("playerSelect");
+      // limpiar por si acaso
+      while (select.options.length > 1) {
+        select.remove(1);
+      }
+
+      names.forEach((name, index) => {
+        const opt = document.createElement("option");
+        opt.value = index;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+
+      const resultDiv = document.getElementById("result");
+      const seeButton = document.getElementById("seeButton");
+      const hideButton = document.getElementById("hideButton");
+
+      seeButton.addEventListener("click", () => {
+        const value = select.value;
+        if (value === "") {
+          alert("Primero selecciona tu nombre.");
+          return;
+        }
+
+        const idx = parseInt(value, 10);
+
+        const storedIdx = localStorage.getItem(STORAGE_KEY);
+        // Si ya se usó este dispositivo con otro nombre, no dejamos ver más
+        if (storedIdx !== null && storedIdx !== value) {
+          alert("Este dispositivo ya se ha utilizado para ver otro amigo invisible. Solo se permite un nombre por dispositivo.");
+          return;
+        }
+
+        const targetIdx = assignment[idx];
+        const giver = names[idx];
+        const receiver = names[targetIdx];
+
+        resultDiv.textContent = giver + ", tu amigo invisible es: " + receiver;
+        resultDiv.classList.remove("hidden");
+        hideButton.classList.remove("hidden");
+
+        // Guardamos con qué nombre se ha usado este dispositivo
+        if (storedIdx === null) {
+          localStorage.setItem(STORAGE_KEY, value);
+        }
+      });
+
+      hideButton.addEventListener("click", () => {
+        resultDiv.textContent = "";
+        resultDiv.classList.add("hidden");
+        hideButton.classList.add("hidden");
+        select.value = "";
+      });
+    }
+  </script>
+</body>
+</html>
